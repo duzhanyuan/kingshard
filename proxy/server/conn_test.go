@@ -1,8 +1,23 @@
+// Copyright 2016 The kingshard Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"): you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations
+// under the License.
+
 package server
 
 import (
-	. "github.com/flike/kingshard/mysql"
 	"testing"
+
+	. "github.com/flike/kingshard/mysql"
 )
 
 func TestConn_Handshake(t *testing.T) {
@@ -270,7 +285,7 @@ func TestConn_SetNames(t *testing.T) {
 	c := newTestDBConn(t)
 	defer c.Close()
 
-	if err := c.SetCharset("gb2312"); err != nil {
+	if err := c.SetCharset("gb2312", 24); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -289,7 +304,10 @@ func TestConn_LastInsertId(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	err = c1.UseDB("kingshard")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c1.Execute(s); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +348,10 @@ func TestConn_LastInsertId(t *testing.T) {
 	}
 
 	c1, _ = n.GetMasterConn()
-
+	err = c1.UseDB("kingshard")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c1.Execute(`drop table if exists kingshard_test_conn_id`); err != nil {
 		t.Fatal(err)
 	}
@@ -370,11 +391,7 @@ func TestConn_SelectVersion(t *testing.T) {
 	c := newTestDBConn(t)
 	defer c.Close()
 
-	if r, err := c.Execute("select version()"); err != nil {
+	if _, err := c.Execute("select version()"); err != nil {
 		t.Fatal(err)
-	} else {
-		if v, _ := r.GetString(0, 0); v != ServerVersion {
-			t.Fatal(v)
-		}
 	}
 }

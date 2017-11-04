@@ -1,13 +1,32 @@
+// Copyright 2016 The kingshard Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"): you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations
+// under the License.
+
 package server
 
 import (
 	"fmt"
-	"github.com/flike/kingshard/core/hack"
-	. "github.com/flike/kingshard/mysql"
 	"strconv"
+
+	"github.com/flike/kingshard/core/errors"
+	"github.com/flike/kingshard/core/hack"
+	"github.com/flike/kingshard/mysql"
 )
 
 func formatValue(value interface{}) ([]byte, error) {
+	if value == nil {
+		return hack.Slice("NULL"), nil
+	}
 	switch v := value.(type) {
 	case int8:
 		return strconv.AppendInt(nil, int64(v), 10), nil
@@ -42,29 +61,44 @@ func formatValue(value interface{}) ([]byte, error) {
 	}
 }
 
-func formatField(field *Field, value interface{}) error {
+func formatField(field *mysql.Field, value interface{}) error {
 	switch value.(type) {
 	case int8, int16, int32, int64, int:
 		field.Charset = 63
-		field.Type = MYSQL_TYPE_LONGLONG
-		field.Flag = BINARY_FLAG | NOT_NULL_FLAG
+		field.Type = mysql.MYSQL_TYPE_LONGLONG
+		field.Flag = mysql.BINARY_FLAG | mysql.NOT_NULL_FLAG
 	case uint8, uint16, uint32, uint64, uint:
 		field.Charset = 63
-		field.Type = MYSQL_TYPE_LONGLONG
-		field.Flag = BINARY_FLAG | NOT_NULL_FLAG | UNSIGNED_FLAG
+		field.Type = mysql.MYSQL_TYPE_LONGLONG
+		field.Flag = mysql.BINARY_FLAG | mysql.NOT_NULL_FLAG | mysql.UNSIGNED_FLAG
+	case float32, float64:
+		field.Charset = 63
+		field.Type = mysql.MYSQL_TYPE_DOUBLE
+		field.Flag = mysql.BINARY_FLAG | mysql.NOT_NULL_FLAG
 	case string, []byte:
 		field.Charset = 33
-		field.Type = MYSQL_TYPE_VAR_STRING
+		field.Type = mysql.MYSQL_TYPE_VAR_STRING
 	default:
 		return fmt.Errorf("unsupport type %T for resultset", value)
 	}
 	return nil
 }
 
-func (c *ClientConn) buildResultset(names []string, values [][]interface{}) (*Resultset, error) {
-	r := new(Resultset)
+func (c *ClientConn) buildResultset(fields []*mysql.Field, names []string, values [][]interface{}) (*mysql.Resultset, error) {
+	var ExistFields bool
+	r := new(mysql.Resultset)
 
-	r.Fields = make([]*Field, len(names))
+	r.Fields = make([]*mysql.Field, len(names))
+	r.FieldNames = make(map[string]int, len(names))
+
+	//use the field def that get from true database
+	if len(fields) != 0 {
+		if len(r.Fields) == len(fields) {
+			ExistFields = true
+		} else {
+			return nil, errors.ErrInvalidArgument
+		}
+	}
 
 	var b []byte
 	var err error
@@ -76,63 +110,78 @@ func (c *ClientConn) buildResultset(names []string, values [][]interface{}) (*Re
 
 		var row []byte
 		for j, value := range vs {
+			//列的定义
 			if i == 0 {
-				field := &Field{}
-				r.Fields[j] = field
-				field.Name = hack.Slice(names[j])
-
-				if err = formatField(field, value); err != nil {
-					return nil, err
+				if ExistFields {
+					r.Fields[j] = fields[j]
+					r.FieldNames[string(r.Fields[j].Name)] = j
+				} else {
+					field := &mysql.Field{}
+					r.Fields[j] = field
+					r.FieldNames[string(r.Fields[j].Name)] = j
+					field.Name = hack.Slice(names[j])
+					if err = formatField(field, value); err != nil {
+						return nil, err
+					}
 				}
+
 			}
 			b, err = formatValue(value)
-
 			if err != nil {
 				return nil, err
 			}
 
-			row = append(row, PutLengthEncodedString(b)...)
+			row = append(row, mysql.PutLengthEncodedString(b)...)
 		}
 
 		r.RowDatas = append(r.RowDatas, row)
 	}
+	//assign the values to the result
+	r.Values = values
 
 	return r, nil
 }
 
-func (c *ClientConn) writeResultset(status uint16, r *Resultset) error {
+func (c *ClientConn) writeResultset(status uint16, r *mysql.Resultset) error {
 	c.affectedRows = int64(-1)
+	total := make([]byte, 0, 4096)
+	data := make([]byte, 4, 512)
+	var err error
 
-	columnLen := PutLengthEncodedInt(uint64(len(r.Fields)))
-
-	data := make([]byte, 4, 1024)
+	columnLen := mysql.PutLengthEncodedInt(uint64(len(r.Fields)))
 
 	data = append(data, columnLen...)
-	if err := c.writePacket(data); err != nil {
+	total, err = c.writePacketBatch(total, data, false)
+	if err != nil {
 		return err
 	}
 
 	for _, v := range r.Fields {
 		data = data[0:4]
 		data = append(data, v.Dump()...)
-		if err := c.writePacket(data); err != nil {
+		total, err = c.writePacketBatch(total, data, false)
+		if err != nil {
 			return err
 		}
 	}
 
-	if err := c.writeEOF(status); err != nil {
+	total, err = c.writeEOFBatch(total, status, false)
+	if err != nil {
 		return err
 	}
 
 	for _, v := range r.RowDatas {
 		data = data[0:4]
 		data = append(data, v...)
-		if err := c.writePacket(data); err != nil {
+		total, err = c.writePacketBatch(total, data, false)
+		if err != nil {
 			return err
 		}
 	}
 
-	if err := c.writeEOF(status); err != nil {
+	total, err = c.writeEOFBatch(total, status, true)
+	total = nil
+	if err != nil {
 		return err
 	}
 

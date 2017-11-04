@@ -1,12 +1,27 @@
+// Copyright 2016 The kingshard Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"): you may
+// not use this file except in compliance with the License. You may obtain
+// a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations
+// under the License.
+
 package mysql
 
 import (
-	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand"
 	"runtime"
+	"time"
 	"unicode/utf8"
 )
 
@@ -45,18 +60,13 @@ func CalcPassword(scramble, password []byte) []byte {
 	return scramble
 }
 
+// seed must be in the range of ascii
 func RandomBuf(size int) ([]byte, error) {
 	buf := make([]byte, size)
-
-	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
-		return nil, err
-	}
-
-	// avoid to generate '\0'
-	for i, b := range buf {
-		if uint8(b) == 0 {
-			buf[i] = '0'
-		}
+	rand.Seed(time.Now().UTC().UnixNano())
+	min, max := 30, 127
+	for i := 0; i < size; i++ {
+		buf[i] = byte(min + rand.Intn(max-min))
 	}
 	return buf, nil
 }
